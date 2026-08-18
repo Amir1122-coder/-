@@ -228,10 +228,10 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 ])
 
-        except Exception:
-    buttons.append([
-        InlineKeyboardButton(
-            f"📢 عضویت در {channel}",
-            url=f"https://t.me/{clean}"
-        )
-    ])
+                except Exception:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"📢 عضویت در {channel}",
+                    url=f"https://t.me/{clean}"
+                )
+            ])
