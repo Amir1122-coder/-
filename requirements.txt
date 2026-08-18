@@ -1,3 +1,6 @@
 python-telegram-bot
 flask
 gunicorn
+python-telegram-bot[job-queue]
+flask
+gunicorn
