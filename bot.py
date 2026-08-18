@@ -149,7 +149,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         (lottery_id,)
     ).fetchone()
     con.close()
- if not lottery:
+if not lottery:
         await update.message.reply_text(
             "❌ قرعه‌کشی پیدا نشد."
         )
