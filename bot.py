@@ -214,7 +214,7 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for channel in channels:
         clean = channel.replace("@", "")
 
-        try:
+                        try:
             member = await context.bot.get_chat_member(
                 f"@{clean}",
                 user.id
@@ -228,7 +228,7 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 ])
 
-                except Exception:
+        except Exception:
             buttons.append([
                 InlineKeyboardButton(
                     f"📢 عضویت در {channel}",
