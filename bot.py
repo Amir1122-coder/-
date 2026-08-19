@@ -11,8 +11,14 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
 from telegram.constants import ChatMemberStatus
-from telegram.error import TelegramError, BadRequest
+
+from telegram.error import (
+    TelegramError,
+    BadRequest,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,18 +35,19 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-ADMIN_ID = int(
-    os.getenv(
-        "ADMIN_ID",
-        "7111630140"
-    )
-)
+# ادمین‌ها
+ADMIN_IDS = {
+    7111630140,
+    5553519521,
+}
 
-CHANNEL = os.getenv(
+# کانال اعلام قرعه‌کشی
+ANNOUNCE_CHANNEL = os.getenv(
     "ANNOUNCE_CHANNEL",
     "@meow_lottery"
 )
 
+# آیدی ادمین برای دریافت جایزه
 ADMIN_USERNAME = os.getenv(
     "ADMIN_USERNAME",
     "@your_AmiRo"
@@ -65,6 +72,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+
     return "Meow Lottery Bot is running."
 
 
@@ -107,7 +115,7 @@ def setup_database():
 
             end_time TEXT NOT NULL,
 
-            channels TEXT DEFAULT '',
+            required_channels TEXT DEFAULT '',
 
             status TEXT DEFAULT 'active',
 
@@ -133,7 +141,10 @@ def setup_database():
 
             joined_at TEXT NOT NULL,
 
-            UNIQUE(lottery_id, user_id)
+            UNIQUE (
+                lottery_id,
+                user_id
+            )
 
         )
     """)
@@ -155,12 +166,11 @@ def setup_database():
     """)
 
     con.commit()
-
     con.close()
 
 
 # =========================================================
-# HELPERS
+# BASIC HELPERS
 # =========================================================
 
 def now_utc():
@@ -172,14 +182,29 @@ def now_utc():
 
 def is_admin(user_id):
 
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
+
+
+def parse_datetime(value):
+
+    dt = datetime.fromisoformat(
+        value
+    )
+
+    if dt.tzinfo is None:
+
+        dt = dt.replace(
+            tzinfo=timezone.utc
+        )
+
+    return dt
 
 
 def get_lottery(lottery_id):
 
     con = get_db()
 
-    lottery = con.execute(
+    row = con.execute(
         """
         SELECT *
         FROM lotteries
@@ -190,14 +215,32 @@ def get_lottery(lottery_id):
 
     con.close()
 
-    return lottery
+    return row
+
+
+def get_active_lotteries():
+
+    con = get_db()
+
+    rows = con.execute(
+        """
+        SELECT *
+        FROM lotteries
+        WHERE status = 'active'
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    con.close()
+
+    return rows
 
 
 def get_participants(lottery_id):
 
     con = get_db()
 
-    users = con.execute(
+    rows = con.execute(
         """
         SELECT *
         FROM participants
@@ -209,7 +252,7 @@ def get_participants(lottery_id):
 
     con.close()
 
-    return users
+    return rows
 
 
 def participant_count(lottery_id):
@@ -230,14 +273,14 @@ def participant_count(lottery_id):
     return count
 
 
-def user_joined(
+def is_participant(
     lottery_id,
     user_id
 ):
 
     con = get_db()
 
-    result = con.execute(
+    row = con.execute(
         """
         SELECT 1
         FROM participants
@@ -252,7 +295,7 @@ def user_joined(
 
     con.close()
 
-    return result is not None
+    return row is not None
 
 
 def save_user(user):
@@ -290,11 +333,99 @@ def save_user(user):
     )
 
     con.commit()
-
     con.close()
 
 
-def intro_seen(user_id):
+# =========================================================
+# TIME
+# =========================================================
+
+def remaining_time(end_time):
+
+    seconds = int(
+        (
+            parse_datetime(end_time)
+            - now_utc()
+        ).total_seconds()
+    )
+
+    if seconds <= 0:
+
+        return "⛔ تمام شده"
+
+    days, remainder = divmod(
+        seconds,
+        86400
+    )
+
+    hours, remainder = divmod(
+        remainder,
+        3600
+    )
+
+    minutes, seconds = divmod(
+        remainder,
+        60
+    )
+
+    if days:
+
+        return (
+            f"{days} روز "
+            f"{hours:02d}:"
+            f"{minutes:02d}:"
+            f"{seconds:02d}"
+        )
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{seconds:02d}"
+    )
+
+
+# =========================================================
+# CHANNEL PARSER
+# =========================================================
+
+def parse_channels(value):
+
+    if not value:
+
+        return []
+
+    if value.strip().lower() == "none":
+
+        return []
+
+    value = value.replace(
+        "،",
+        ","
+    )
+
+    result = []
+
+    for item in value.split(","):
+
+        item = item.strip()
+
+        if item:
+
+            result.append(item)
+
+    return result
+
+
+def clean_channel(channel):
+
+    return channel.strip().lstrip("@")
+
+
+# =========================================================
+# USER INTRO
+# =========================================================
+
+def has_seen_intro(user_id):
 
     con = get_db()
 
@@ -344,205 +475,11 @@ def set_intro_seen(user_id):
     )
 
     con.commit()
-
     con.close()
 
 
-def parse_datetime(value):
-
-    dt = datetime.fromisoformat(value)
-
-    if dt.tzinfo is None:
-
-        dt = dt.replace(
-            tzinfo=timezone.utc
-        )
-
-    return dt
-
-
-def remaining_time(end_time):
-
-    seconds = int(
-        (
-            parse_datetime(end_time)
-            - now_utc()
-        ).total_seconds()
-    )
-
-    if seconds <= 0:
-
-        return "⛔ تمام شده"
-
-    days, remainder = divmod(
-        seconds,
-        86400
-    )
-
-    hours, remainder = divmod(
-        remainder,
-        3600
-    )
-
-    minutes, seconds = divmod(
-        remainder,
-        60
-    )
-
-    if days:
-
-        return (
-            f"{days} روز "
-            f"{hours:02d}:"
-            f"{minutes:02d}:"
-            f"{seconds:02d}"
-        )
-
-    return (
-        f"{hours:02d}:"
-        f"{minutes:02d}:"
-        f"{seconds:02d}"
-    )
-
-
-def parse_channels(value):
-
-    if not value:
-
-        return []
-
-    if value.lower() == "none":
-
-        return []
-
-    value = value.replace(
-        "،",
-        ","
-    )
-
-    return [
-        x.strip()
-        for x in value.split(",")
-        if x.strip()
-    ]
-
-
-def clean_channel(channel):
-
-    return channel.strip().lstrip("@")
-
-
 # =========================================================
-# LOTTERY MESSAGE
-# =========================================================
-
-def lottery_message(
-    lottery,
-    bot_username
-):
-
-    count = participant_count(
-        lottery["id"]
-    )
-
-    bot_username = (
-        bot_username
-        or "YourBot"
-    )
-
-    if lottery["status"] == "active":
-
-        timer = (
-            f"⏱ زمان باقی‌مانده: "
-            f"<b>{remaining_time(lottery['end_time'])}</b>"
-        )
-
-    else:
-
-        timer = ""
-
-    return (
-        f"🎁 <b>{lottery['title']}</b>\n\n"
-
-        f"🏆 تعداد برنده‌ها: "
-        f"<b>{lottery['winners']}</b> نفر\n"
-
-        f"👥 تعداد شرکت‌کنندگان: "
-        f"<b>{count}</b> نفر\n"
-
-        f"{timer}\n\n"
-
-        "🤖 برای شرکت در قرعه‌کشی، "
-        f"ابتدا ربات <b>@{bot_username.lstrip('@')}</b> "
-        "را Start کنید.\n\n"
-
-        "👇 سپس روی دکمه زیر بزنید."
-    )
-
-
-# =========================================================
-# KEYBOARDS
-# =========================================================
-
-def lottery_keyboard(lottery_id):
-
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🎰 شرکت در قرعه‌کشی",
-                callback_data=f"join:{lottery_id}"
-            )
-        ]
-    ])
-
-
-def admin_keyboard():
-
-    return InlineKeyboardMarkup([
-
-        [
-            InlineKeyboardButton(
-                "🎁 قرعه‌کشی جدید",
-                callback_data="admin:new"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "📋 قرعه‌کشی‌های فعال",
-                callback_data="admin:list"
-            ),
-
-            InlineKeyboardButton(
-                "👥 شرکت‌کنندگان",
-                callback_data="admin:participants"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "🎲 قرعه‌کشی دستی",
-                callback_data="admin:draw"
-            ),
-
-            InlineKeyboardButton(
-                "❌ لغو قرعه‌کشی",
-                callback_data="admin:cancel"
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                "ℹ️ راهنما",
-                callback_data="admin:help"
-            )
-        ]
-
-    ])
-
-
-# =========================================================
-# MEMBERSHIP
+# MEMBERSHIP CHECK
 # =========================================================
 
 async def check_membership(
@@ -559,6 +496,9 @@ async def check_membership(
             channel
         )
 
+        if not username:
+            continue
+
         try:
 
             member = await bot.get_chat_member(
@@ -567,11 +507,8 @@ async def check_membership(
             )
 
             if member.status in (
-
                 ChatMemberStatus.LEFT,
-
                 ChatMemberStatus.KICKED
-
             ):
 
                 missing.append(
@@ -580,6 +517,8 @@ async def check_membership(
 
         except TelegramError:
 
+            # اگر ربات نتواند وضعیت عضویت را
+            # بررسی کند، عضویت را تأیید نمی‌کنیم.
             missing.append(
                 username
             )
@@ -589,7 +528,7 @@ async def check_membership(
 
 def membership_keyboard(
     channels,
-    callback
+    callback_data
 ):
 
     buttons = []
@@ -610,13 +549,149 @@ def membership_keyboard(
     buttons.append([
         InlineKeyboardButton(
             "🔄 بررسی عضویت",
-            callback_data=callback
+            callback_data=callback_data
         )
     ])
 
     return InlineKeyboardMarkup(
         buttons
     )
+
+
+# =========================================================
+# LOTTERY MESSAGE
+# =========================================================
+
+def build_channel_message(
+    lottery,
+    bot_username
+):
+
+    count = participant_count(
+        lottery["id"]
+    )
+
+    bot_username = (
+        bot_username
+        or "YourBot"
+    )
+
+    bot_username = bot_username.lstrip(
+        "@"
+    )
+
+    if lottery["status"] == "active":
+
+        timer = (
+            f"⏱ زمان باقی‌مانده: "
+            f"<b>{remaining_time(lottery['end_time'])}</b>"
+        )
+
+    else:
+
+        timer = ""
+
+    return (
+
+        f"🎁 <b>{lottery['title']}</b>\n\n"
+
+        f"🆔 شناسه قرعه‌کشی: "
+        f"<code>{lottery['id']}</code>\n\n"
+
+        f"🏆 تعداد برنده‌ها: "
+        f"<b>{lottery['winners']}</b> نفر\n"
+
+        f"👥 شرکت‌کنندگان: "
+        f"<b>{count}</b> نفر\n"
+
+        f"{timer}\n\n"
+
+        "🤖 برای شرکت در قرعه‌کشی، "
+        f"ابتدا ربات <b>@{bot_username}</b> "
+        "را Start کنید.\n\n"
+
+        "👇 برای شرکت روی دکمه زیر بزنید."
+
+    )
+
+
+def lottery_join_keyboard(
+    lottery_id
+):
+
+    return InlineKeyboardMarkup([
+
+        [
+
+            InlineKeyboardButton(
+                "🎰 شرکت در قرعه‌کشی",
+                callback_data=f"join:{lottery_id}"
+            )
+
+        ]
+
+    ])
+
+
+# =========================================================
+# ADMIN KEYBOARD
+# =========================================================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup([
+
+        [
+
+            InlineKeyboardButton(
+                "🎁 قرعه‌کشی جدید",
+                callback_data="admin:new"
+            )
+
+        ],
+
+        [
+
+            InlineKeyboardButton(
+                "📋 قرعه‌کشی‌های فعال",
+                callback_data="admin:list"
+            )
+
+        ],
+
+        [
+
+            InlineKeyboardButton(
+                "👥 شرکت‌کنندگان",
+                callback_data="admin:participants"
+            )
+
+        ],
+
+        [
+
+            InlineKeyboardButton(
+                "🎲 قرعه‌کشی دستی",
+                callback_data="admin:draw"
+            ),
+
+            InlineKeyboardButton(
+                "❌ لغو",
+                callback_data="admin:cancel"
+            )
+
+        ],
+
+        [
+
+            InlineKeyboardButton(
+                "ℹ️ راهنما",
+                callback_data="admin:help"
+            )
+
+        ]
+
+    ])
 
 
 # =========================================================
@@ -629,16 +704,15 @@ async def start(
 ):
 
     if not update.message:
-
         return
 
     user = update.effective_user
 
     save_user(user)
 
-    # -----------------------------------------
-    # Lottery deep link
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # DEEP LINK
+    # -----------------------------------------------------
 
     if context.args:
 
@@ -675,29 +749,93 @@ async def start(
 
                 return
 
+            if lottery["status"] != "active":
+
+                await update.message.reply_text(
+
+                    "⛔ این قرعه‌کشی دیگر فعال نیست."
+
+                )
+
+                return
+
+            # اگر کانال اجباری دارد،
+            # در PV بررسی می‌کنیم.
+            channels = parse_channels(
+                lottery["required_channels"]
+            )
+
+            if channels:
+
+                missing = await check_membership(
+
+                    context.bot,
+
+                    user.id,
+
+                    channels
+
+                )
+
+                if missing:
+
+                    await update.message.reply_text(
+
+                        "📢 <b>برای شرکت در این "
+                        "قرعه‌کشی باید ابتدا در "
+                        "کانال‌های زیر عضو شوید:</b>\n\n"
+
+                        "بعد از عضویت روی "
+                        "«بررسی عضویت» بزنید.",
+
+                        parse_mode="HTML",
+
+                        reply_markup=
+                        membership_keyboard(
+
+                            missing,
+
+                            f"recheck:{lottery_id}"
+
+                        )
+
+                    )
+
+                    return
+
+            # اگر عضو است، پیام قرعه‌کشی
+            # را در PV نمایش بده.
             await update.message.reply_text(
-                lottery_message(
+
+                build_channel_message(
+
                     lottery,
+
                     context.bot.username
+
                 ),
+
                 parse_mode="HTML",
-                reply_markup=lottery_keyboard(
+
+                reply_markup=
+                lottery_join_keyboard(
                     lottery_id
                 )
+
             )
 
             return
 
-    # -----------------------------------------
+    # -----------------------------------------------------
     # ADMIN
-    # -----------------------------------------
+    # -----------------------------------------------------
 
     if is_admin(user.id):
 
         await update.message.reply_text(
 
             "🛠 <b>پنل مدیریت لاتاری میویی</b>\n\n"
-            "یکی از گزینه‌ها را انتخاب کنید:",
+            "از دکمه‌های زیر استفاده کن:",
 
             parse_mode="HTML",
 
@@ -707,15 +845,15 @@ async def start(
 
         return
 
-    # -----------------------------------------
-    # INTRO
-    # -----------------------------------------
+    # -----------------------------------------------------
+    # NORMAL USER
+    # -----------------------------------------------------
 
     required_channels = parse_channels(
-        CHANNEL
+        ANNOUNCE_CHANNEL
     )
 
-    if not intro_seen(user.id):
+    if not has_seen_intro(user.id):
 
         missing = await check_membership(
 
@@ -733,17 +871,21 @@ async def start(
 
                 "🐱 <b>به لاتاری میویی خوش آمدید!</b>\n\n"
 
-                "برای اجرای ربات باید ابتدا "
-                "در کانال زیر عضو شوید.\n\n"
+                "برای اجرای ربات ابتدا در "
+                "کانال زیر عضو شوید.\n\n"
 
                 "بعد از عضویت روی "
                 "«بررسی عضویت» بزنید.",
 
                 parse_mode="HTML",
 
-                reply_markup=membership_keyboard(
+                reply_markup=
+                membership_keyboard(
+
                     missing,
+
                     "check_intro"
+
                 )
 
             )
@@ -760,11 +902,12 @@ async def start(
         "حالا می‌توانید در قرعه‌کشی‌ها شرکت کنید.",
 
         parse_mode="HTML"
+
     )
 
 
 # =========================================================
-# CHECK INTRO
+# INTRO CHECK
 # =========================================================
 
 async def check_intro(
@@ -777,7 +920,7 @@ async def check_intro(
     user = query.from_user
 
     channels = parse_channels(
-        CHANNEL
+        ANNOUNCE_CHANNEL
     )
 
     missing = await check_membership(
@@ -787,15 +930,17 @@ async def check_intro(
         user.id,
 
         channels
+
     )
 
     if missing:
 
         await query.answer(
 
-            "❌ هنوز عضو کانال نیستید.",
+            "❌ هنوز عضویت شما تأیید نشده.",
 
             show_alert=True
+
         )
 
         return
@@ -805,8 +950,11 @@ async def check_intro(
     )
 
     await query.answer(
+
         "✅ عضویت تأیید شد!",
+
         show_alert=True
+
     )
 
     try:
@@ -814,8 +962,7 @@ async def check_intro(
         await query.edit_message_text(
 
             "✅ عضویت شما تأیید شد.\n\n"
-            "🐱 حالا می‌توانید در "
-            "قرعه‌کشی‌ها شرکت کنید."
+            "🐱 حالا می‌توانید از ربات استفاده کنید."
 
         )
 
@@ -825,7 +972,7 @@ async def check_intro(
 
 
 # =========================================================
-# JOIN
+# JOIN LOTTERY
 # =========================================================
 
 async def join_lottery(
@@ -857,8 +1004,11 @@ async def join_lottery(
     if not lottery:
 
         await query.answer(
+
             "❌ قرعه‌کشی پیدا نشد.",
+
             show_alert=True
+
         )
 
         return
@@ -866,8 +1016,11 @@ async def join_lottery(
     if lottery["status"] != "active":
 
         await query.answer(
-            "⛔ این قرعه‌کشی فعال نیست.",
+
+            "⛔ این قرعه‌کشی تمام شده.",
+
             show_alert=True
+
         )
 
         return
@@ -877,14 +1030,23 @@ async def join_lottery(
     ):
 
         await query.answer(
+
             "⛔ زمان قرعه‌کشی تمام شده.",
+
             show_alert=True
+
         )
 
         return
 
+    user = query.from_user
+
+    # -----------------------------------------------------
+    # FORCE JOIN ONLY IN PRIVATE CHAT
+    # -----------------------------------------------------
+
     channels = parse_channels(
-        lottery["channels"]
+        lottery["required_channels"]
     )
 
     if channels:
@@ -893,51 +1055,88 @@ async def join_lottery(
 
             context.bot,
 
-            query.from_user.id,
+            user.id,
 
             channels
+
         )
 
         if missing:
 
             await query.answer(
 
-                "❌ ابتدا عضو کانال شوید.",
+                "📢 ابتدا عضو کانال شوید.",
 
                 show_alert=True
+
             )
 
-            await query.message.reply_text(
+            try:
 
-                "📢 ابتدا در کانال‌های زیر عضو شوید:",
+                await context.bot.send_message(
 
-                reply_markup=membership_keyboard(
+                    chat_id=user.id,
 
-                    missing,
+                    text=(
 
-                    f"recheck:{lottery_id}"
+                        "📢 <b>برای شرکت در این "
+                        "قرعه‌کشی باید ابتدا "
+                        "عضو کانال زیر شوید:</b>\n\n"
+
+                        "بعد از عضویت روی "
+                        "«بررسی عضویت» بزنید."
+
+                    ),
+
+                    parse_mode="HTML",
+
+                    reply_markup=
+                    membership_keyboard(
+
+                        missing,
+
+                        f"recheck:{lottery_id}"
+
+                    )
 
                 )
-            )
+
+            except TelegramError:
+
+                # اگر PV هنوز توسط کاربر Start نشده
+                await query.answer(
+
+                    "❗ ابتدا ربات را Start کنید "
+                    "تا پیام عضویت برایتان ارسال شود.",
+
+                    show_alert=True
+
+                )
 
             return
 
-    if user_joined(
+    # -----------------------------------------------------
+    # ALREADY JOINED
+    # -----------------------------------------------------
 
+    if is_participant(
         lottery_id,
-
-        query.from_user.id
-
+        user.id
     ):
 
         await query.answer(
 
-            "ℹ️ شما قبلاً شرکت کرده‌اید.",
+            "ℹ️ شما قبلاً در این قرعه‌کشی شرکت کرده‌اید.",
 
             show_alert=True
+
         )
 
         return
+
+    # -----------------------------------------------------
+    # INSERT PARTICIPANT
+    # -----------------------------------------------------
 
     con = get_db()
 
@@ -961,39 +1160,57 @@ async def join_lottery(
             (
                 lottery_id,
 
-                query.from_user.id,
+                user.id,
 
-                query.from_user.username or "",
+                user.username or "",
 
-                query.from_user.first_name or "",
+                user.first_name or "",
 
                 now_utc().isoformat()
             )
+
         )
 
         con.commit()
 
     except sqlite3.IntegrityError:
 
-        pass
+        con.close()
+
+        await query.answer(
+
+            "ℹ️ شما قبلاً شرکت کرده‌اید.",
+
+            show_alert=True
+
+        )
+
+        return
 
     finally:
 
-        con.close()
+        try:
+            con.close()
+        except:
+            pass
+
+    # -----------------------------------------------------
+    # SUCCESS
+    # -----------------------------------------------------
 
     await query.answer(
 
-        "🎉 شما با موفقیت شرکت کردید!",
+        "🎉 با موفقیت شرکت کردید!",
 
         show_alert=True
+
     )
 
-    # پیام PV
     try:
 
         await context.bot.send_message(
 
-            chat_id=query.from_user.id,
+            chat_id=user.id,
 
             text=(
 
@@ -1002,6 +1219,9 @@ async def join_lottery(
                 f"شما در قرعه‌کشی "
                 f"<b>{lottery['title']}</b> "
                 "شرکت کردید.\n\n"
+
+                f"🆔 شناسه قرعه‌کشی: "
+                f"<code>{lottery_id}</code>\n\n"
 
                 "🍀 موفق باشید!"
 
@@ -1027,9 +1247,20 @@ async def recheck_lottery(
 
     query = update.callback_query
 
-    lottery_id = int(
-        query.data.split(":")[1]
-    )
+    try:
+
+        lottery_id = int(
+            query.data.split(":")[1]
+        )
+
+    except:
+
+        await query.answer(
+            "❌ درخواست نامعتبر.",
+            show_alert=True
+        )
+
+        return
 
     lottery = get_lottery(
         lottery_id
@@ -1038,33 +1269,40 @@ async def recheck_lottery(
     if not lottery:
 
         await query.answer(
+
             "❌ قرعه‌کشی پیدا نشد.",
+
             show_alert=True
+
         )
 
         return
 
-    if user_joined(
-        lottery_id,
-        query.from_user.id
-    ):
+    if lottery["status"] != "active":
 
         await query.answer(
-            "ℹ️ شما قبلاً شرکت کرده‌اید.",
+
+            "⛔ قرعه‌کشی تمام شده.",
+
             show_alert=True
+
         )
 
         return
+
+    user = query.from_user
+
+    channels = parse_channels(
+        lottery["required_channels"]
+    )
 
     missing = await check_membership(
 
         context.bot,
 
-        query.from_user.id,
+        user.id,
 
-        parse_channels(
-            lottery["channels"]
-        )
+        channels
 
     )
 
@@ -1072,53 +1310,84 @@ async def recheck_lottery(
 
         await query.answer(
 
-            "❌ هنوز عضویت شما تأیید نشده.",
+            "❌ هنوز عضو کانال نشده‌اید.",
 
             show_alert=True
+
         )
 
         return
 
-    con = get_db()
+    # بعد از تأیید عضویت،
+    # کاربر مستقیماً ثبت می‌شود.
+    if not is_participant(
+        lottery_id,
+        user.id
+    ):
 
-    con.execute(
+        con = get_db()
 
-        """
-        INSERT OR IGNORE INTO participants
-        (
-            lottery_id,
-            user_id,
-            username,
-            first_name,
-            joined_at
+        con.execute(
+
+            """
+            INSERT OR IGNORE INTO participants
+            (
+                lottery_id,
+                user_id,
+                username,
+                first_name,
+                joined_at
+            )
+
+            VALUES (?, ?, ?, ?, ?)
+            """,
+
+            (
+                lottery_id,
+
+                user.id,
+
+                user.username or "",
+
+                user.first_name or "",
+
+                now_utc().isoformat()
+            )
+
         )
 
-        VALUES (?, ?, ?, ?, ?)
-        """,
-
-        (
-            lottery_id,
-
-            query.from_user.id,
-
-            query.from_user.username or "",
-
-            query.from_user.first_name or "",
-
-            now_utc().isoformat()
-        )
-    )
-
-    con.commit()
-
-    con.close()
+        con.commit()
+        con.close()
 
     await query.answer(
 
-        "🎉 عضویت تأیید شد و شرکت کردید!",
+        "🎉 عضویت تأیید شد؛ شما شرکت کردید!",
 
         show_alert=True
+
     )
+
+    try:
+
+        await query.edit_message_text(
+
+            "🎉 <b>با موفقیت در قرعه‌کشی شرکت کردید!</b>\n\n"
+
+            f"🎁 جایزه: "
+            f"<b>{lottery['title']}</b>\n\n"
+
+            f"🆔 شناسه قرعه‌کشی: "
+            f"<code>{lottery_id}</code>\n\n"
+
+            "🍀 موفق باشید!",
+
+            parse_mode="HTML"
+
+        )
+
+    except BadRequest:
+
+        pass
 
 
 # =========================================================
@@ -1144,10 +1413,11 @@ async def new_lottery(
 
     await update.message.reply_text(
 
-        "🎁 <b>ساخت قرعه‌کشی</b>\n\n"
-        "عنوان جایزه را بفرست:",
+        "🎁 <b>ساخت قرعه‌کشی جدید</b>\n\n"
+        "نام یا مقدار جایزه را بفرست:",
 
         parse_mode="HTML"
+
     )
 
 
@@ -1161,7 +1431,6 @@ async def admin_input(
 ):
 
     if not update.message:
-
         return
 
     if not is_admin(
@@ -1175,13 +1444,23 @@ async def admin_input(
     )
 
     if not step:
-
         return
 
     value = update.message.text.strip()
 
+    # -----------------------------------------------------
     # TITLE
+    # -----------------------------------------------------
+
     if step == "title":
+
+        if not value:
+
+            await update.message.reply_text(
+                "❌ عنوان جایزه نمی‌تواند خالی باشد."
+            )
+
+            return
 
         context.user_data[
             "title"
@@ -1193,15 +1472,19 @@ async def admin_input(
 
         await update.message.reply_text(
 
-            "🏆 تعداد برنده‌ها را بفرست:\n\n"
+            "🏆 تعداد برنده‌ها را وارد کن:\n\n"
             "مثال: <code>3</code>",
 
             parse_mode="HTML"
+
         )
 
         return
 
+    # -----------------------------------------------------
     # WINNERS
+    # -----------------------------------------------------
+
     if step == "winners":
 
         try:
@@ -1216,7 +1499,8 @@ async def admin_input(
 
             await update.message.reply_text(
 
-                "❌ یک عدد صحیح معتبر وارد کن."
+                "❌ تعداد برنده باید یک عدد صحیح "
+                "بزرگ‌تر از صفر باشد."
 
             )
 
@@ -1232,15 +1516,19 @@ async def admin_input(
 
         await update.message.reply_text(
 
-            "⏱ چند ساعت فعال باشد؟\n\n"
+            "⏱ مدت قرعه‌کشی را به ساعت وارد کن:\n\n"
             "مثال: <code>24</code>",
 
             parse_mode="HTML"
+
         )
 
         return
 
+    # -----------------------------------------------------
     # DURATION
+    # -----------------------------------------------------
+
     if step == "duration":
 
         try:
@@ -1255,7 +1543,7 @@ async def admin_input(
 
             await update.message.reply_text(
 
-                "❌ زمان نامعتبر است."
+                "❌ زمان واردشده معتبر نیست."
 
             )
 
@@ -1271,27 +1559,35 @@ async def admin_input(
 
         await update.message.reply_text(
 
-            "📢 کانال عضویت اجباری را وارد کن.\n\n"
+            "📢 کانال‌های جوین اجباری را وارد کن.\n\n"
 
             "مثال:\n"
-            "<code>@channel</code>\n\n"
+            "<code>@channel1,@channel2</code>\n\n"
 
-            "بدون کانال:\n"
-            "<code>none</code>",
+            "اگر جوین اجباری نمی‌خواهی:\n"
+            "<code>none</code>\n\n"
+
+            "⚠️ این کانال‌ها در پیام کانال "
+            "قرعه‌کشی نمایش داده نمی‌شوند؛ "
+            "فقط در PV کاربر نمایش داده خواهند شد.",
 
             parse_mode="HTML"
+
         )
 
         return
 
+    # -----------------------------------------------------
     # CHANNELS
+    # -----------------------------------------------------
+
     if step == "channels":
 
-        channels = ""
+        required_channels = ""
 
         if value.lower() != "none":
 
-            channels = value
+            required_channels = value
 
         title = context.user_data[
             "title"
@@ -1315,6 +1611,10 @@ async def admin_input(
 
         ).isoformat()
 
+        # -------------------------------------------------
+        # CREATE LOTTERY
+        # -------------------------------------------------
+
         con = get_db()
 
         cursor = con.execute(
@@ -1325,7 +1625,7 @@ async def admin_input(
                 title,
                 winners,
                 end_time,
-                channels,
+                required_channels,
                 status,
                 created_at
             )
@@ -1340,29 +1640,37 @@ async def admin_input(
 
                 end_time,
 
-                channels,
+                required_channels,
 
                 now_utc().isoformat()
             )
+
         )
 
         lottery_id = cursor.lastrowid
 
         con.commit()
-
         con.close()
 
         lottery = get_lottery(
             lottery_id
         )
 
+        # -------------------------------------------------
+        # CHANNEL MESSAGE
+        #
+        # توجه:
+        # required_channels اینجا عمداً
+        # نمایش داده نمی‌شود.
+        # -------------------------------------------------
+
         try:
 
-            sent = await context.bot.send_message(
+            sent_message = await context.bot.send_message(
 
-                chat_id=CHANNEL,
+                chat_id=ANNOUNCE_CHANNEL,
 
-                text=lottery_message(
+                text=build_channel_message(
 
                     lottery,
 
@@ -1372,10 +1680,9 @@ async def admin_input(
 
                 parse_mode="HTML",
 
-                reply_markup=lottery_keyboard(
-
+                reply_markup=
+                lottery_join_keyboard(
                     lottery_id
-
                 )
 
             )
@@ -1393,20 +1700,36 @@ async def admin_input(
                 """,
 
                 (
-                    sent.message_id,
+                    sent_message.message_id,
 
                     lottery_id
                 )
+
             )
 
             con.commit()
-
             con.close()
 
             await update.message.reply_text(
 
-                "✅ قرعه‌کشی ساخته شد و "
-                "در کانال منتشر شد.",
+                "✅ <b>قرعه‌کشی ساخته شد!</b>\n\n"
+
+                f"🆔 شناسه قرعه‌کشی: "
+                f"<code>{lottery_id}</code>\n"
+
+                f"🎁 جایزه: "
+                f"<b>{title}</b>\n"
+
+                f"🏆 برنده‌ها: "
+                f"<b>{winners}</b>\n"
+
+                f"⏱ زمان: "
+                f"<b>{hours}</b> ساعت\n\n"
+
+                "🎲 برای اجرای دستی قبل از پایان:\n"
+                f"<code>/draw {lottery_id}</code>",
+
+                parse_mode="HTML",
 
                 reply_markup=admin_keyboard()
 
@@ -1416,7 +1739,10 @@ async def admin_input(
 
             await update.message.reply_text(
 
-                f"❌ خطا در ارسال به کانال:\n{error}"
+                "❌ قرعه‌کشی در دیتابیس ساخته شد "
+                "ولی ارسال آن به کانال ناموفق بود.\n\n"
+
+                f"خطا:\n{error}"
 
             )
 
@@ -1448,15 +1774,15 @@ async def perform_draw(
 
         return (
             False,
-            "⛔ این قرعه‌کشی قبلاً انجام شده.",
+            "⛔ این قرعه‌کشی قبلاً پایان یافته یا لغو شده.",
             []
         )
 
-    users = get_participants(
+    participants = get_participants(
         lottery_id
     )
 
-    if not users:
+    if not participants:
 
         return (
             False,
@@ -1464,27 +1790,33 @@ async def perform_draw(
             []
         )
 
-    # تعداد برنده هرگز بیشتر از شرکت‌کنندگان نیست.
+    # -----------------------------------------------------
+    # WINNER COUNT
+    # -----------------------------------------------------
+
     winner_count = min(
 
         int(lottery["winners"]),
 
-        len(users)
+        len(participants)
 
     )
 
     winners = random.sample(
 
-        users,
+        participants,
 
         winner_count
 
     )
 
-    # قفل کردن قرعه‌کشی
+    # -----------------------------------------------------
+    # CHANGE STATUS
+    # -----------------------------------------------------
+
     con = get_db()
 
-    con.execute(
+    cursor = con.execute(
 
         """
         UPDATE lotteries
@@ -1503,19 +1835,33 @@ async def perform_draw(
 
             lottery_id
         )
+
     )
 
     con.commit()
-
     con.close()
 
-    # نتیجه
+    if cursor.rowcount == 0:
+
+        return (
+            False,
+            "⛔ قرعه‌کشی قبلاً توسط فرایند دیگری انجام شده.",
+            []
+        )
+
+    # -----------------------------------------------------
+    # RESULT
+    # -----------------------------------------------------
+
     result = (
 
         "🎊 <b>نتیجه قرعه‌کشی</b>\n\n"
 
         f"🎁 جایزه: "
         f"<b>{lottery['title']}</b>\n\n"
+
+        f"🆔 شناسه: "
+        f"<code>{lottery_id}</code>\n\n"
 
     )
 
@@ -1553,6 +1899,10 @@ async def perform_draw(
 
         )
 
+    # -----------------------------------------------------
+    # EDIT CHANNEL MESSAGE
+    # -----------------------------------------------------
+
     channel_result = (
 
         "🎉 <b>قرعه‌کشی به پایان رسید!</b>\n\n"
@@ -1563,14 +1913,13 @@ async def perform_draw(
 
     )
 
-    # ویرایش همان پیام کانال
     if lottery["channel_message_id"]:
 
         try:
 
             await bot.edit_message_text(
 
-                chat_id=CHANNEL,
+                chat_id=ANNOUNCE_CHANNEL,
 
                 message_id=lottery[
                     "channel_message_id"
@@ -1584,56 +1933,38 @@ async def perform_draw(
 
             )
 
-        except TelegramError:
+        except TelegramError as error:
 
-            await bot.send_message(
-
-                chat_id=CHANNEL,
-
-                text=channel_result,
-
-                parse_mode="HTML"
-
+            print(
+                "CHANNEL RESULT EDIT ERROR:",
+                error
             )
 
+            try:
+
+                await bot.send_message(
+
+                    chat_id=ANNOUNCE_CHANNEL,
+
+                    text=channel_result,
+
+                    parse_mode="HTML"
+
+                )
+
+            except TelegramError:
+
+                pass
+
     else:
-
-        await bot.send_message(
-
-            chat_id=CHANNEL,
-
-            text=channel_result,
-
-            parse_mode="HTML"
-
-        )
-
-    # پیام خصوصی برنده‌ها
-    for winner in winners:
 
         try:
 
             await bot.send_message(
 
-                chat_id=winner[
-                    "user_id"
-                ],
+                chat_id=ANNOUNCE_CHANNEL,
 
-                text=(
-
-                    "🎉 <b>تبریک!</b>\n\n"
-
-                    "🏆 شما برنده قرعه‌کشی شدید!\n\n"
-
-                    f"🎁 جایزه: "
-                    f"<b>{lottery['title']}</b>\n\n"
-
-                    "📩 برای دریافت جایزه "
-                    "به ادمین پیام دهید:\n\n"
-
-                    f"<b>{ADMIN_USERNAME}</b>"
-
-                ),
+                text=channel_result,
 
                 parse_mode="HTML"
 
@@ -1643,6 +1974,51 @@ async def perform_draw(
 
             pass
 
+    # -----------------------------------------------------
+    # PRIVATE MESSAGE TO WINNERS
+    # -----------------------------------------------------
+
+    for winner in winners:
+
+        try:
+
+            await bot.send_message(
+
+                chat_id=winner["user_id"],
+
+                text=(
+
+                    "🎉 <b>تبریک!</b>\n\n"
+
+                    "شما برنده قرعه‌کشی شدید! 🏆\n\n"
+
+                    f"🎁 <b>جایزه:</b>\n"
+                    f"{lottery['title']}\n\n"
+
+                    f"🆔 شناسه قرعه‌کشی:\n"
+                    f"<code>{lottery_id}</code>\n\n"
+
+                    "📩 برای دریافت جایزه "
+                    "به ادمین پیام دهید:\n\n"
+
+                    f"<b>{ADMIN_USERNAME}</b>\n\n"
+
+                    "❤️ تبریک می‌گوییم!"
+
+                ),
+
+                parse_mode="HTML"
+
+            )
+
+        except TelegramError as error:
+
+            print(
+                f"WINNER PM ERROR "
+                f"{winner['user_id']}:",
+                error
+            )
+
     return (
         True,
         result,
@@ -1651,7 +2027,7 @@ async def perform_draw(
 
 
 # =========================================================
-# MANUAL DRAW
+# MANUAL DRAW COMMAND
 # =========================================================
 
 async def draw_command(
@@ -1669,8 +2045,10 @@ async def draw_command(
 
         await update.message.reply_text(
 
+            "❌ شناسه قرعه‌کشی را وارد کن.\n\n"
+
             "مثال:\n"
-            "<code>/draw 1</code>",
+            "<code>/draw 12</code>",
 
             parse_mode="HTML"
 
@@ -1684,11 +2062,11 @@ async def draw_command(
             context.args[0]
         )
 
-    except:
+    except ValueError:
 
         await update.message.reply_text(
 
-            "❌ شناسه نامعتبر است."
+            "❌ شناسه باید عدد باشد."
 
         )
 
@@ -1706,7 +2084,7 @@ async def draw_command(
 
         await update.message.reply_text(
 
-            "✅ قرعه‌کشی با موفقیت انجام شد.\n\n"
+            "✅ <b>قرعه‌کشی انجام شد.</b>\n\n"
             + result,
 
             parse_mode="HTML"
@@ -1730,7 +2108,7 @@ async def auto_draw_job(
 
     con = get_db()
 
-    lotteries = con.execute(
+    rows = con.execute(
 
         """
         SELECT id
@@ -1750,7 +2128,7 @@ async def auto_draw_job(
 
     con.close()
 
-    for lottery in lotteries:
+    for row in rows:
 
         try:
 
@@ -1758,7 +2136,7 @@ async def auto_draw_job(
 
                 context.bot,
 
-                lottery["id"]
+                row["id"]
 
             )
 
@@ -1771,33 +2149,21 @@ async def auto_draw_job(
 
 
 # =========================================================
-# UPDATE CHANNEL EVERY MINUTE
+# CHANNEL UPDATE EVERY MINUTE
 # =========================================================
 
 async def update_channel_job(
     context
 ):
 
-    con = get_db()
-
-    lotteries = con.execute(
-
-        """
-        SELECT *
-
-        FROM lotteries
-
-        WHERE status = 'active'
-
-        AND channel_message_id IS NOT NULL
-        """
-    ).fetchall()
-
-    con.close()
+    lotteries = get_active_lotteries()
 
     for lottery in lotteries:
 
-        # اگر زمان تمام شده، قرعه‌کشی انجام شود.
+        # -------------------------------------------------
+        # EXPIRED
+        # -------------------------------------------------
+
         if now_utc() >= parse_datetime(
             lottery["end_time"]
         ):
@@ -1815,23 +2181,30 @@ async def update_channel_job(
             except Exception as error:
 
                 print(
-                    "DRAW ERROR:",
+                    "EXPIRED DRAW ERROR:",
                     error
                 )
 
+            continue
+
+        # -------------------------------------------------
+        # UPDATE TIMER + PARTICIPANTS
+        # -------------------------------------------------
+
+        if not lottery["channel_message_id"]:
             continue
 
         try:
 
             await context.bot.edit_message_text(
 
-                chat_id=CHANNEL,
+                chat_id=ANNOUNCE_CHANNEL,
 
                 message_id=lottery[
                     "channel_message_id"
                 ],
 
-                text=lottery_message(
+                text=build_channel_message(
 
                     lottery,
 
@@ -1841,21 +2214,21 @@ async def update_channel_job(
 
                 parse_mode="HTML",
 
-                # دکمه را حفظ می‌کنیم.
-                reply_markup=lottery_keyboard(
-
+                # دکمه شرکت حفظ می‌شود.
+                reply_markup=
+                lottery_join_keyboard(
                     lottery["id"]
-
                 )
 
             )
 
         except BadRequest as error:
 
-            if (
-                "not modified"
-                not in str(error).lower()
-            ):
+            # اگر متن دقیقاً تغییر نکرده،
+            # خطا محسوب نمی‌کنیم.
+            if "not modified" not in str(
+                error
+            ).lower():
 
                 print(
                     "CHANNEL EDIT ERROR:",
@@ -1890,7 +2263,7 @@ async def participants_command(
         await update.message.reply_text(
 
             "مثال:\n"
-            "<code>/participants 1</code>",
+            "<code>/participants 12</code>",
 
             parse_mode="HTML"
 
@@ -1904,12 +2277,10 @@ async def participants_command(
             context.args[0]
         )
 
-    except:
+    except ValueError:
 
         await update.message.reply_text(
-
             "❌ شناسه نامعتبر است."
-
         )
 
         return
@@ -1921,9 +2292,7 @@ async def participants_command(
     if not lottery:
 
         await update.message.reply_text(
-
             "❌ قرعه‌کشی پیدا نشد."
-
         )
 
         return
@@ -1936,7 +2305,12 @@ async def participants_command(
 
         await update.message.reply_text(
 
-            "👥 تعداد شرکت‌کنندگان: 0"
+            f"🆔 قرعه‌کشی: "
+            f"<code>{lottery_id}</code>\n\n"
+
+            "👥 تعداد شرکت‌کنندگان: <b>0</b>",
+
+            parse_mode="HTML"
 
         )
 
@@ -1944,11 +2318,16 @@ async def participants_command(
 
     text = (
 
-        f"👥 <b>شرکت‌کنندگان</b>\n\n"
+        "👥 <b>لیست شرکت‌کنندگان</b>\n\n"
 
-        f"🎁 {lottery['title']}\n"
+        f"🆔 قرعه‌کشی: "
+        f"<code>{lottery_id}</code>\n"
 
-        f"📊 تعداد: <b>{len(users)}</b>\n\n"
+        f"🎁 جایزه: "
+        f"<b>{lottery['title']}</b>\n"
+
+        f"📊 تعداد: "
+        f"<b>{len(users)}</b>\n\n"
 
     )
 
@@ -1979,8 +2358,8 @@ async def participants_command(
 
         )
 
-    # محدودیت پیام تلگرام
-    for i in range(
+    # تقسیم پیام‌های طولانی
+    for start in range(
         0,
         len(text),
         3800
@@ -1988,7 +2367,9 @@ async def participants_command(
 
         await update.message.reply_text(
 
-            text[i:i + 3800],
+            text[
+                start:start + 3800
+            ],
 
             parse_mode="HTML"
 
@@ -1996,7 +2377,7 @@ async def participants_command(
 
 
 # =========================================================
-# CANCEL
+# CANCEL COMMAND
 # =========================================================
 
 async def cancel_command(
@@ -2015,7 +2396,7 @@ async def cancel_command(
         await update.message.reply_text(
 
             "مثال:\n"
-            "<code>/cancel 1</code>",
+            "<code>/cancel 12</code>",
 
             parse_mode="HTML"
 
@@ -2029,12 +2410,10 @@ async def cancel_command(
             context.args[0]
         )
 
-    except:
+    except ValueError:
 
         await update.message.reply_text(
-
             "❌ شناسه نامعتبر است."
-
         )
 
         return
@@ -2046,9 +2425,7 @@ async def cancel_command(
     if not lottery:
 
         await update.message.reply_text(
-
             "❌ قرعه‌کشی پیدا نشد."
-
         )
 
         return
@@ -2072,7 +2449,7 @@ async def cancel_command(
                 "✅ بله، لغو شود",
 
                 callback_data=
-                f"cancel_yes:{lottery_id}"
+                f"cancel_confirm:{lottery_id}"
 
             ),
 
@@ -2091,9 +2468,15 @@ async def cancel_command(
 
     await update.message.reply_text(
 
-        f"⚠️ آیا قرعه‌کشی\n"
-        f"<b>{lottery['title']}</b>\n"
-        "لغو شود؟",
+        "⚠️ <b>تأیید لغو قرعه‌کشی</b>\n\n"
+
+        f"🆔 شناسه: "
+        f"<code>{lottery_id}</code>\n"
+
+        f"🎁 جایزه: "
+        f"<b>{lottery['title']}</b>\n\n"
+
+        "آیا مطمئنی؟",
 
         parse_mode="HTML",
 
@@ -2102,7 +2485,11 @@ async def cancel_command(
     )
 
 
-async def cancel_yes(
+# =========================================================
+# CANCEL CONFIRM
+# =========================================================
+
+async def cancel_confirm(
     update,
     context
 ):
@@ -2114,8 +2501,11 @@ async def cancel_yes(
     ):
 
         await query.answer(
+
             "⛔ دسترسی ندارید.",
+
             show_alert=True
+
         )
 
         return
@@ -2139,7 +2529,7 @@ async def cancel_yes(
 
     con = get_db()
 
-    con.execute(
+    cursor = con.execute(
 
         """
         UPDATE lotteries
@@ -2156,31 +2546,48 @@ async def cancel_yes(
     )
 
     con.commit()
-
     con.close()
+
+    if cursor.rowcount == 0:
+
+        await query.answer(
+
+            "⛔ قبلاً تغییر کرده.",
+
+            show_alert=True
+
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # EDIT CHANNEL
+    # -----------------------------------------------------
 
     cancelled_message = (
 
-        "🚫 <b>این قرعه‌کشی لغو شد.</b>\n\n"
+        "🚫 <b>قرعه‌کشی لغو شد.</b>\n\n"
 
         f"🎁 جایزه: "
         f"<b>{lottery['title']}</b>\n"
 
-        f"👥 تعداد شرکت‌کنندگان: "
+        f"🆔 شناسه: "
+        f"<code>{lottery_id}</code>\n"
+
+        f"👥 شرکت‌کنندگان: "
         f"<b>{participant_count(lottery_id)}</b>\n\n"
 
         "⛔ دیگر امکان شرکت وجود ندارد."
 
     )
 
-    # پیام کانال هم ویرایش می‌شود.
     if lottery["channel_message_id"]:
 
         try:
 
             await context.bot.edit_message_text(
 
-                chat_id=CHANNEL,
+                chat_id=ANNOUNCE_CHANNEL,
 
                 message_id=lottery[
                     "channel_message_id"
@@ -2194,13 +2601,19 @@ async def cancel_yes(
 
             )
 
-        except TelegramError:
+        except TelegramError as error:
 
-            pass
+            print(
+                "CANCEL CHANNEL ERROR:",
+                error
+            )
 
     await query.answer(
-        "قرعه‌کشی لغو شد.",
+
+        "✅ قرعه‌کشی لغو شد.",
+
         show_alert=True
+
     )
 
     await query.edit_message_text(
@@ -2230,7 +2643,7 @@ async def admin_command(
     await update.message.reply_text(
 
         "🛠 <b>پنل مدیریت لاتاری میویی</b>\n\n"
-        "دستور موردنظر را انتخاب کن:",
+        "یکی از گزینه‌ها را انتخاب کن:",
 
         parse_mode="HTML",
 
@@ -2238,6 +2651,10 @@ async def admin_command(
 
     )
 
+
+# =========================================================
+# ADMIN CALLBACKS
+# =========================================================
 
 async def admin_callback(
     update,
@@ -2251,8 +2668,11 @@ async def admin_callback(
     ):
 
         await query.answer(
+
             "⛔ دسترسی ندارید.",
+
             show_alert=True
+
         )
 
         return
@@ -2261,7 +2681,10 @@ async def admin_callback(
 
     await query.answer()
 
+    # -----------------------------------------------------
     # NEW
+    # -----------------------------------------------------
+
     if data == "admin:new":
 
         context.user_data.clear()
@@ -2278,7 +2701,10 @@ async def admin_callback(
 
         return
 
+    # -----------------------------------------------------
     # MENU
+    # -----------------------------------------------------
+
     if data == "admin:menu":
 
         await query.edit_message_text(
@@ -2293,26 +2719,13 @@ async def admin_callback(
 
         return
 
-    # ACTIVE
+    # -----------------------------------------------------
+    # ACTIVE LOTTERIES
+    # -----------------------------------------------------
+
     if data == "admin:list":
 
-        con = get_db()
-
-        lotteries = con.execute(
-
-            """
-            SELECT *
-
-            FROM lotteries
-
-            WHERE status = 'active'
-
-            ORDER BY id DESC
-            """
-
-        ).fetchall()
-
-        con.close()
+        lotteries = get_active_lotteries()
 
         if not lotteries:
 
@@ -2330,17 +2743,25 @@ async def admin_callback(
 
                 text += (
 
-                    f"🆔 #{lottery['id']}\n"
+                    f"🆔 <code>{lottery['id']}</code>\n"
 
                     f"🎁 {lottery['title']}\n"
 
-                    f"👥 "
+                    f"🏆 برنده‌ها: "
+                    f"{lottery['winners']}\n"
+
+                    f"👥 شرکت‌کنندگان: "
                     f"{participant_count(lottery['id'])}\n"
 
                     f"⏱ "
                     f"{remaining_time(lottery['end_time'])}\n\n"
 
                 )
+
+            text += (
+                "🎲 اجرای دستی:\n"
+                "<code>/draw ID</code>"
+            )
 
         await query.edit_message_text(
 
@@ -2368,24 +2789,42 @@ async def admin_callback(
 
         return
 
+    # -----------------------------------------------------
     # DRAW
+    # -----------------------------------------------------
+
     if data == "admin:draw":
 
         await query.edit_message_text(
 
             "🎲 <b>قرعه‌کشی دستی</b>\n\n"
 
-            "برای اجرای زودتر از موعد:\n\n"
+            "برای اجرای قرعه‌کشی قبل از "
+            "پایان تایمر از دستور زیر استفاده کن:\n\n"
 
             "<code>/draw ID</code>\n\n"
 
             "مثال:\n"
+            "<code>/draw 12</code>\n\n"
 
-            "<code>/draw 5</code>",
+            "شناسه هر قرعه‌کشی را می‌توانی "
+            "از بخش «قرعه‌کشی‌های فعال» ببینی.",
 
             parse_mode="HTML",
 
             reply_markup=InlineKeyboardMarkup([
+
+                [
+
+                    InlineKeyboardButton(
+
+                        "📋 مشاهده قرعه‌کشی‌ها",
+
+                        callback_data="admin:list"
+
+                    )
+
+                ],
 
                 [
 
@@ -2405,26 +2844,13 @@ async def admin_callback(
 
         return
 
-    # CANCEL
+    # -----------------------------------------------------
+    # CANCEL LIST
+    # -----------------------------------------------------
+
     if data == "admin:cancel":
 
-        con = get_db()
-
-        lotteries = con.execute(
-
-            """
-            SELECT *
-
-            FROM lotteries
-
-            WHERE status = 'active'
-
-            ORDER BY id DESC
-            """
-
-        ).fetchall()
-
-        con.close()
+        lotteries = get_active_lotteries()
 
         buttons = []
 
@@ -2456,6 +2882,19 @@ async def admin_callback(
 
         ])
 
+        if not lotteries:
+
+            await query.edit_message_text(
+
+                "❌ قرعه‌کشی فعالی وجود ندارد.",
+
+                reply_markup=
+                InlineKeyboardMarkup(buttons)
+
+            )
+
+            return
+
         await query.edit_message_text(
 
             "❌ قرعه‌کشی موردنظر را انتخاب کن:",
@@ -2467,7 +2906,10 @@ async def admin_callback(
 
         return
 
+    # -----------------------------------------------------
     # CANCEL SELECT
+    # -----------------------------------------------------
+
     if data.startswith(
         "cancel_select:"
     ):
@@ -2480,6 +2922,18 @@ async def admin_callback(
             lottery_id
         )
 
+        if not lottery:
+
+            await query.edit_message_text(
+
+                "❌ قرعه‌کشی پیدا نشد.",
+
+                reply_markup=admin_keyboard()
+
+            )
+
+            return
+
         keyboard = InlineKeyboardMarkup([
 
             [
@@ -2489,7 +2943,7 @@ async def admin_callback(
                     "✅ تأیید لغو",
 
                     callback_data=
-                    f"cancel_yes:{lottery_id}"
+                    f"cancel_confirm:{lottery_id}"
 
                 ),
 
@@ -2508,14 +2962,15 @@ async def admin_callback(
 
         await query.edit_message_text(
 
-            f"⚠️ <b>تأیید لغو</b>\n\n"
+            "⚠️ <b>تأیید لغو</b>\n\n"
 
-            f"🎁 {lottery['title']}\n"
+            f"🆔 شناسه: "
+            f"<code>{lottery_id}</code>\n"
 
-            f"👥 شرکت‌کنندگان: "
-            f"{participant_count(lottery_id)}\n\n"
+            f"🎁 جایزه: "
+            f"<b>{lottery['title']}</b>\n\n"
 
-            "آیا مطمئن هستی؟",
+            "آیا مطمئنی؟",
 
             parse_mode="HTML",
 
@@ -2525,7 +2980,10 @@ async def admin_callback(
 
         return
 
+    # -----------------------------------------------------
     # PARTICIPANTS
+    # -----------------------------------------------------
+
     if data == "admin:participants":
 
         con = get_db()
@@ -2534,12 +2992,9 @@ async def admin_callback(
 
             """
             SELECT *
-
             FROM lotteries
-
             ORDER BY id DESC
-
-            LIMIT 15
+            LIMIT 20
             """
 
         ).fetchall()
@@ -2587,7 +3042,10 @@ async def admin_callback(
 
         return
 
-    # SHOW PARTICIPANTS
+    # -----------------------------------------------------
+    # PARTICIPANTS VIEW
+    # -----------------------------------------------------
+
     if data.startswith(
         "participants:"
     ):
@@ -2606,45 +3064,53 @@ async def admin_callback(
 
         text = (
 
-            f"👥 <b>{lottery['title']}</b>\n\n"
+            "👥 <b>شرکت‌کنندگان</b>\n\n"
+
+            f"🆔 شناسه قرعه‌کشی: "
+            f"<code>{lottery_id}</code>\n"
+
+            f"🎁 جایزه: "
+            f"<b>{lottery['title']}</b>\n"
 
             f"📊 تعداد: "
             f"<b>{len(users)}</b>\n\n"
 
         )
 
-        for index, user in enumerate(
-            users,
-            1
-        ):
-
-            username = (
-
-                "@"
-                + user["username"]
-
-                if user["username"]
-
-                else "ندارد"
-
-            )
-
-            text += (
-
-                f"{index}. "
-                f"{user['first_name'] or 'بدون نام'}\n"
-
-                f"🔗 {username}\n"
-
-                f"🆔 <code>{user['user_id']}</code>\n\n"
-
-            )
-
         if not users:
 
             text += (
                 "هنوز کسی شرکت نکرده."
             )
+
+        else:
+
+            for index, user in enumerate(
+                users,
+                1
+            ):
+
+                username = (
+
+                    "@"
+                    + user["username"]
+
+                    if user["username"]
+
+                    else "ندارد"
+
+                )
+
+                text += (
+
+                    f"{index}. "
+                    f"{user['first_name'] or 'بدون نام'}\n"
+
+                    f"🔗 {username}\n"
+
+                    f"🆔 <code>{user['user_id']}</code>\n\n"
+
+                )
 
         await query.edit_message_text(
 
@@ -2673,30 +3139,30 @@ async def admin_callback(
 
         return
 
+    # -----------------------------------------------------
     # HELP
+    # -----------------------------------------------------
+
     if data == "admin:help":
 
         await query.edit_message_text(
 
             "📚 <b>راهنمای ادمین</b>\n\n"
 
-            "🎁 ساخت قرعه‌کشی\n"
+            "🎁 /new\n"
+            "ساخت قرعه‌کشی جدید\n\n"
 
-            "📋 مشاهده قرعه‌کشی‌های فعال\n"
+            "🎲 /draw ID\n"
+            "اجرای دستی قرعه‌کشی قبل از پایان\n\n"
 
-            "👥 مشاهده شرکت‌کنندگان\n"
+            "❌ /cancel ID\n"
+            "لغو قرعه‌کشی با تأیید\n\n"
 
-            "🎲 قرعه‌کشی دستی قبل از پایان تایمر\n"
+            "👥 /participants ID\n"
+            "مشاهده شرکت‌کنندگان\n\n"
 
-            "❌ لغو قرعه‌کشی با تأیید\n\n"
-
-            "دستورات:\n"
-
-            "<code>/admin</code>\n"
-            "<code>/new</code>\n"
-            "<code>/draw ID</code>\n"
-            "<code>/cancel ID</code>\n"
-            "<code>/participants ID</code>",
+            "🛠 /admin\n"
+            "باز کردن پنل مدیریت",
 
             parse_mode="HTML",
 
@@ -2757,102 +3223,120 @@ def main():
 
     )
 
-    # Commands
-    application.add_handler(
+    # -----------------------------------------------------
+    # COMMANDS
+    # -----------------------------------------------------
 
+    application.add_handler(
         CommandHandler(
             "start",
             start
         )
-
     )
 
     application.add_handler(
-
         CommandHandler(
             "admin",
             admin_command
         )
-
     )
 
     application.add_handler(
-
         CommandHandler(
             "new",
             new_lottery
         )
-
     )
 
     application.add_handler(
-
         CommandHandler(
             "draw",
             draw_command
         )
-
     )
 
     application.add_handler(
-
         CommandHandler(
             "cancel",
             cancel_command
         )
-
     )
 
     application.add_handler(
-
         CommandHandler(
             "participants",
             participants_command
         )
-
     )
 
-    # Admin callbacks
+    # -----------------------------------------------------
+    # CALLBACKS
+    # -----------------------------------------------------
+
     application.add_handler(
 
         CallbackQueryHandler(
-            admin_callback,
-            pattern=r"^(admin:|cancel_select:|participants:|cancel_yes:)"
-        )
 
-    )
-
-    # Intro check
-    application.add_handler(
-
-        CallbackQueryHandler(
             check_intro,
+
             pattern=r"^check_intro$"
+
         )
 
     )
 
-    # Lottery recheck
     application.add_handler(
 
         CallbackQueryHandler(
+
             recheck_lottery,
+
             pattern=r"^recheck:"
+
         )
 
     )
 
-    # Lottery join
     application.add_handler(
 
         CallbackQueryHandler(
+
             join_lottery,
+
             pattern=r"^join:"
+
         )
 
     )
 
-    # Admin text input
+    application.add_handler(
+
+        CallbackQueryHandler(
+
+            cancel_confirm,
+
+            pattern=r"^cancel_confirm:"
+
+        )
+
+    )
+
+    application.add_handler(
+
+        CallbackQueryHandler(
+
+            admin_callback,
+
+            pattern=r"^(admin:|cancel_select:|participants:)"
+
+        )
+
+    )
+
+    # -----------------------------------------------------
+    # ADMIN TEXT INPUT
+    # -----------------------------------------------------
+
     application.add_handler(
 
         MessageHandler(
@@ -2866,8 +3350,11 @@ def main():
 
     )
 
-    # Automatic draw.
-    # Every 30 seconds checks expired lotteries.
+    # -----------------------------------------------------
+    # AUTO DRAW
+    # هر 30 ثانیه بررسی پایان قرعه‌کشی
+    # -----------------------------------------------------
+
     application.job_queue.run_repeating(
 
         auto_draw_job,
@@ -2878,8 +3365,12 @@ def main():
 
     )
 
-    # Channel update every minute.
-    # Timer + participant count + button.
+    # -----------------------------------------------------
+    # CHANNEL UPDATE
+    # هر یک دقیقه:
+    # تایمر + تعداد شرکت‌کنندگان
+    # -----------------------------------------------------
+
     application.job_queue.run_repeating(
 
         update_channel_job,
@@ -2894,8 +3385,17 @@ def main():
         "MEOW LOTTERY BOT STARTED"
     )
 
+    print(
+        "ADMINS:",
+        ADMIN_IDS
+    )
+
     application.run_polling()
 
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
 
